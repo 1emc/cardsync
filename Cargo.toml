@@ -4,6 +4,9 @@ edition = "2021"
 version = "0.1.0"
 license = "MIT"
 
+[lints]
+workspace = true
+
 [workspace]
 members = [
   "crates/api",
@@ -47,6 +50,8 @@ tower-http = { version = "0.6", features = ["trace", "request-id", "util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+zeroize = "1"
+url = "2"
 
 [dev-dependencies]
 base64.workspace = true
@@ -56,3 +61,11 @@ domain = { path = "crates/domain" }
 privacy = { path = "crates/privacy" }
 uuid.workspace = true
 vcard = { path = "crates/vcard" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+pedantic = "warn"

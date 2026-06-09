@@ -3,7 +3,7 @@ mod config;
 mod error;
 mod middleware;
 mod routes;
-use app::AppState;
+use app::{AppState, RateLimiter};
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -27,9 +27,18 @@ async fn main() -> anyhow::Result<()> {
         db,
         config: Arc::new(config),
         graph: graph::client::GraphClient::new()?,
+        rate_limiter: Arc::new(RateLimiter::new()),
     };
     tracing::info!(%addr, "starting galcard api");
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app::router(state)).await?;
+    axum::serve(listener, app::router(state))
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        tracing::warn!(error = %e, "failed to install shutdown signal handler");
+    }
 }

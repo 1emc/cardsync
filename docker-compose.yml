@@ -20,9 +20,8 @@ services:
     profiles: ["api"]
     environment:
       DATABASE_URL: postgres://galcard:galcard@postgres:5432/galcard
-      ADMIN_API_TOKEN: dev-admin-token
-      SUPPRESSION_SECRET: dev-suppression-secret-change-me
-      TOKEN_ENCRYPTION_KEY: dev-token-encryption-key-change-me
+      ADMIN_API_TOKEN: dev-admin-token-change-me-32-bytes-min
+      SUPPRESSION_SECRET: dev-suppression-secret-change-me-32-bytes-min
       BIND_ADDR: 0.0.0.0:3000
       PUBLIC_BASE_URL: http://localhost:3000
       RUST_LOG: info

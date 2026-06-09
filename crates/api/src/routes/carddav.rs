@@ -14,6 +14,8 @@ use domain::Contact;
 use uuid::Uuid;
 use vcard::VcardOptions;
 
+const MAX_PROPFIND_CONTACTS: i64 = 5_000;
+
 pub async fn collection(
     State(state): State<AppState>,
     Path((tenant_slug, addressbook_slug)): Path<(String, String)>,
@@ -27,6 +29,8 @@ pub async fn collection(
     if method == Method::OPTIONS {
         return Ok(options_response());
     }
+    validate_slug(&tenant_slug, "tenant_slug")?;
+    validate_slug(&addressbook_slug, "addressbook_slug")?;
     let auth = authenticate(&state, &headers, &tenant_slug, &addressbook_slug).await?;
     match method.as_str() {
         "PROPFIND" => {
@@ -35,7 +39,7 @@ pub async fn collection(
                 auth.tenant_id,
                 &tenant_slug,
                 &addressbook_slug,
-                depth(&headers),
+                depth(&headers)?,
             )
             .await
         }
@@ -58,18 +62,28 @@ pub async fn contact(
     if method == Method::OPTIONS {
         return Ok(options_response());
     }
+    validate_slug(&tenant_slug, "tenant_slug")?;
+    validate_slug(&addressbook_slug, "addressbook_slug")?;
     let auth = authenticate(&state, &headers, &tenant_slug, &addressbook_slug).await?;
     let uid = contact.strip_suffix(".vcf").unwrap_or(&contact);
     let contact_id = Uuid::parse_str(uid).map_err(|_| ApiError::NotFound)?;
     let c = fetch_contact(&state, auth.tenant_id, contact_id).await?;
     match method.as_str() {
         "GET" => {
-            let body = vcard::build_vcard(&c, &VcardOptions::default());
             let etag = vcard::contact_etag(&c, &VcardOptions::default());
+            if headers
+                .get(header::IF_NONE_MATCH)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|if_none_match| if_none_match == etag.as_str())
+            {
+                return Ok(StatusCode::NOT_MODIFIED.into_response());
+            }
+            let body = vcard::build_vcard(&c, &VcardOptions::default());
             Ok((
                 [
                     (header::CONTENT_TYPE, "text/vcard; charset=utf-8"),
                     (header::ETAG, etag.as_str()),
+                    (header::CACHE_CONTROL, "private, must-revalidate"),
                 ],
                 body,
             )
@@ -113,8 +127,11 @@ async fn authenticate(
 }
 
 async fn fetch_contacts(state: &AppState, tenant_id: Uuid) -> ApiResult<Vec<Contact>> {
-    let rows = sqlx::query_as::<_, ContactRow>("SELECT * FROM contacts WHERE tenant_id=$1 AND is_deleted=false AND is_suppressed=false ORDER BY display_name NULLS LAST")
-        .bind(tenant_id).fetch_all(&state.db).await?;
+    let rows = sqlx::query_as::<_, ContactRow>("SELECT * FROM contacts WHERE tenant_id=$1 AND is_deleted=false AND is_suppressed=false ORDER BY display_name NULLS LAST LIMIT $2")
+        .bind(tenant_id)
+        .bind(MAX_PROPFIND_CONTACTS)
+        .fetch_all(&state.db)
+        .await?;
     Ok(rows.into_iter().map(Into::into).collect())
 }
 async fn fetch_contact(state: &AppState, tenant_id: Uuid, contact_id: Uuid) -> ApiResult<Contact> {
@@ -176,12 +193,40 @@ fn resource_for(
         body,
     }
 }
-fn depth(headers: &HeaderMap) -> u8 {
-    headers
+fn depth(headers: &HeaderMap) -> ApiResult<u8> {
+    let value = headers
         .get("Depth")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0)
+        .unwrap_or("0")
+        .trim();
+    match value {
+        "infinity" => Err(ApiError::BadRequest(
+            "Depth: infinity is not supported".into(),
+        )),
+        "0" | "1" => value
+            .parse::<u8>()
+            .map_err(|_| ApiError::BadRequest("invalid Depth header".into())),
+        _ => Err(ApiError::BadRequest(
+            "Depth must be 0 or 1 for CardDAV collections".into(),
+        )),
+    }
+}
+
+fn validate_slug(slug: &str, field: &str) -> ApiResult<()> {
+    if slug.is_empty() || slug.len() > 63 {
+        return Err(ApiError::BadRequest(format!(
+            "{field} must be 1-63 characters"
+        )));
+    }
+    if !slug
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(ApiError::BadRequest(format!(
+            "{field} may only contain lowercase letters, digits, and hyphens"
+        )));
+    }
+    Ok(())
 }
 fn xml_response(body: String) -> ApiResult<Response> {
     Ok((
