@@ -1,7 +1,8 @@
 use crate::models::GraphUsersResponse;
-use anyhow::{anyhow, Context};
+use anyhow::{anyhow, bail, Context};
 use reqwest::{Client, StatusCode};
 use std::time::Duration;
+use url::Url;
 
 const SELECT: &str = "id,displayName,givenName,surname,mail,userPrincipalName,businessPhones,mobilePhone,jobTitle,department,companyName,officeLocation,accountEnabled";
 
@@ -65,6 +66,7 @@ impl GraphClient {
             let page: GraphUsersResponse = res.json().await?;
             users.extend(page.value.into_iter().filter(|u| u.is_syncable()));
             if let Some(next) = page.next_link {
+                validate_graph_next_link(&next)?;
                 url = next;
             } else {
                 break;
@@ -72,4 +74,18 @@ impl GraphClient {
         }
         Ok(users)
     }
+}
+
+fn validate_graph_next_link(next_link: &str) -> anyhow::Result<()> {
+    let parsed = Url::parse(next_link).context("invalid Graph nextLink URL")?;
+    if parsed.scheme() != "https" {
+        bail!("Graph nextLink must use HTTPS");
+    }
+    let Some(host) = parsed.host_str() else {
+        bail!("Graph nextLink must include a host");
+    };
+    if host != "graph.microsoft.com" {
+        bail!("Graph nextLink host is not allowed: {host}");
+    }
+    Ok(())
 }

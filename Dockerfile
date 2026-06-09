@@ -1,6 +1,8 @@
-FROM rust:1.82-bookworm AS builder
+FROM rust:1-bookworm AS builder
 WORKDIR /app
 COPY . .
+RUN cargo install cargo-audit --locked
+RUN cargo audit
 RUN cargo build --release -p api
 
 FROM debian:bookworm-slim

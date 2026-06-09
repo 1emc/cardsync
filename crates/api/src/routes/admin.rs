@@ -9,10 +9,14 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use domain::{Contact, PrivacySuppression, Tenant};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use sqlx::FromRow;
-use subtle::ConstantTimeEq;
 use uuid::Uuid;
+
+type HmacSha256 = Hmac<Sha256>;
+const ADMIN_TOKEN_COMPARE_KEY: &[u8] = b"galcard-admin-token-comparison-v1";
 
 fn require_admin(headers: &HeaderMap, state: &AppState) -> ApiResult<()> {
     let provided = headers
@@ -20,15 +24,38 @@ fn require_admin(headers: &HeaderMap, state: &AppState) -> ApiResult<()> {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or_default();
-    if provided
-        .as_bytes()
-        .ct_eq(state.config.admin_api_token.as_bytes())
-        .into()
-    {
+
+    let provided_mac = token_mac(provided)?;
+    let expected_mac = token_mac(state.config.admin_api_token.expose_secret())?;
+    if privacy::constant_time_eq(&provided_mac, &expected_mac) {
         Ok(())
     } else {
         Err(ApiError::Unauthorized)
     }
+}
+
+fn token_mac(token: &str) -> ApiResult<String> {
+    let mut mac = HmacSha256::new_from_slice(ADMIN_TOKEN_COMPARE_KEY)
+        .map_err(|_| anyhow::anyhow!("invalid admin token comparison key"))?;
+    mac.update(token.as_bytes());
+    Ok(hex::encode(mac.finalize().into_bytes()))
+}
+
+fn validate_slug(slug: &str, field: &str) -> ApiResult<()> {
+    if slug.is_empty() || slug.len() > 63 {
+        return Err(ApiError::BadRequest(format!(
+            "{field} must be 1-63 characters"
+        )));
+    }
+    if !slug
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(ApiError::BadRequest(format!(
+            "{field} may only contain lowercase letters, digits, and hyphens"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -87,6 +114,7 @@ pub async fn create_tenant(
     Json(req): Json<CreateTenant>,
 ) -> ApiResult<Json<Tenant>> {
     require_admin(&headers, &state)?;
+    validate_slug(&req.slug, "slug")?;
     let id = Uuid::new_v4();
     let row = sqlx::query_as::<_, TenantRow>("INSERT INTO tenants (id, slug, display_name, microsoft_tenant_id) VALUES ($1,$2,$3,$4) RETURNING *")
         .bind(id).bind(req.slug).bind(req.display_name).bind(req.microsoft_tenant_id).fetch_one(&state.db).await?;
@@ -116,6 +144,7 @@ pub async fn create_carddav_user(
         carddav::auth::hash_password(&password).map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let id = Uuid::new_v4();
     let addressbook = req.addressbook_slug.unwrap_or_else(|| "default".into());
+    validate_slug(&addressbook, "addressbook_slug")?;
     sqlx::query("INSERT INTO carddav_users (id, tenant_id, username, password_hash, addressbook_slug) VALUES ($1,$2,$3,$4,$5)")
         .bind(id).bind(tenant_id).bind(&req.username).bind(hash).bind(addressbook).execute(&state.db).await?;
     Ok(Json(PasswordResponse {
@@ -192,9 +221,12 @@ pub async fn create_suppression(
             "scope_type must be global or tenant".into(),
         ));
     }
-    let hash =
-        privacy::SuppressionCandidate::from_email(&state.config.suppression_secret, &req.email)
-            .suppression_hash;
+    let hash = privacy::SuppressionCandidate::from_email(
+        state.config.suppression_secret.expose_secret(),
+        &req.email,
+    )
+    .map_err(anyhow::Error::from)?
+    .suppression_hash;
     let id = Uuid::new_v4();
     let row = sqlx::query_as::<_, SuppressionRow>("INSERT INTO privacy_suppressions (id, scope_type, scope_value, suppression_hash, reason) VALUES ($1,$2,$3,$4,$5) RETURNING *")
         .bind(id).bind(req.scope_type).bind(req.scope_value).bind(hash).bind(req.reason).fetch_one(&state.db).await?;
@@ -220,10 +252,13 @@ pub async fn delete_suppression(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&headers, &state)?;
-    sqlx::query("DELETE FROM privacy_suppressions WHERE id=$1")
+    let result = sqlx::query("DELETE FROM privacy_suppressions WHERE id=$1")
         .bind(id)
         .execute(&state.db)
         .await?;
+    if result.rows_affected() == 0 {
+        return Err(ApiError::NotFound);
+    }
     Ok(Json(serde_json::json!({"deleted": true})))
 }
 
@@ -239,9 +274,9 @@ pub async fn sync_tenant(
         &state.config.microsoft_client_secret,
     ) {
         (Some(t), Some(c), Some(s)) => graph::auth::ClientCredentials {
-            tenant_id: t.clone(),
-            client_id: c.clone(),
-            client_secret: s.clone(),
+            tenant_id: t.as_str(),
+            client_id: c.as_str(),
+            client_secret: s.expose_secret(),
         },
         _ => {
             return Err(ApiError::BadRequest(
@@ -249,7 +284,13 @@ pub async fn sync_tenant(
             ))
         }
     };
-    let token = graph::auth::acquire_token(state.graph.http(), &creds)
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+        .bind(tenant_id.to_string())
+        .bind(graph::sync::SOURCE_GRAPH_USERS)
+        .execute(&mut *tx)
+        .await?;
+    let token = graph::auth::acquire_token(state.graph.http(), creds)
         .await
         .map_err(|e| {
             tracing::warn!(tenant_id=%tenant_id, error_code="graph_token_failed");
@@ -259,12 +300,6 @@ pub async fn sync_tenant(
         tracing::warn!(tenant_id=%tenant_id, error_code="graph_sync_failed");
         e
     })?;
-    let mut tx = state.db.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
-        .bind(tenant_id.to_string())
-        .bind(graph::sync::SOURCE_GRAPH_USERS)
-        .execute(&mut *tx)
-        .await?;
     let sync_started_at: (DateTime<Utc>,) =
         sqlx::query_as("SELECT now()").fetch_one(&mut *tx).await?;
 
@@ -273,7 +308,13 @@ pub async fn sync_tenant(
     for u in users {
         let email = u.mail.as_deref().or(u.user_principal_name.as_deref());
         let is_sup = if let Some(e) = email {
-            is_suppressed(&state, tenant_id, e).await?
+            is_suppressed_in_tx(
+                &mut tx,
+                state.config.suppression_secret.expose_secret(),
+                tenant_id,
+                e,
+            )
+            .await?
         } else {
             false
         };
@@ -304,10 +345,31 @@ pub async fn sync_tenant(
 }
 
 async fn is_suppressed(state: &AppState, tenant_id: Uuid, email: &str) -> ApiResult<bool> {
-    let candidate =
-        privacy::SuppressionCandidate::from_email(&state.config.suppression_secret, email);
+    let candidate = privacy::SuppressionCandidate::from_email(
+        state.config.suppression_secret.expose_secret(),
+        email,
+    )
+    .map_err(anyhow::Error::from)?;
     let rows: Vec<(String,)> = sqlx::query_as("SELECT suppression_hash FROM privacy_suppressions WHERE suppression_hash=$1 AND (scope_type='global' OR (scope_type='tenant' AND scope_value=$2)) AND (expires_at IS NULL OR expires_at > now())")
         .bind(&candidate.suppression_hash).bind(tenant_id.to_string()).fetch_all(&state.db).await?;
+    Ok(rows
+        .iter()
+        .any(|r| privacy::constant_time_eq(&r.0, &candidate.suppression_hash)))
+}
+
+async fn is_suppressed_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    suppression_secret: &str,
+    tenant_id: Uuid,
+    email: &str,
+) -> ApiResult<bool> {
+    let candidate = privacy::SuppressionCandidate::from_email(suppression_secret, email)
+        .map_err(anyhow::Error::from)?;
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT suppression_hash FROM privacy_suppressions WHERE suppression_hash=$1 AND (scope_type='global' OR (scope_type='tenant' AND scope_value=$2)) AND (expires_at IS NULL OR expires_at > now())")
+        .bind(&candidate.suppression_hash)
+        .bind(tenant_id.to_string())
+        .fetch_all(&mut **tx)
+        .await?;
     Ok(rows
         .iter()
         .any(|r| privacy::constant_time_eq(&r.0, &candidate.suppression_hash)))

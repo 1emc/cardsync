@@ -66,7 +66,9 @@ pub fn build_vcard(contact: &Contact, options: &VcardOptions) -> String {
 
 pub fn contact_etag(contact: &Contact, options: &VcardOptions) -> String {
     let mut h = Sha256::new();
-    h.update(build_vcard(contact, options).as_bytes());
+    h.update(contact.id.as_bytes());
+    h.update(contact.updated_at.timestamp_micros().to_le_bytes());
+    h.update([u8::from(options.include_mobile_phone)]);
     format!("\"{}\"", hex::encode(h.finalize()))
 }
 
@@ -94,32 +96,40 @@ fn esc_component(v: &str) -> String {
     esc_value(v)
 }
 fn fold_lines(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .flat_map(|line| fold_line_bytes(line))
+        .collect()
+}
+
+fn fold_line_bytes(line: &str) -> Vec<String> {
+    if line.len() <= 75 {
+        return vec![line.to_string()];
+    }
+
     let mut out = Vec::new();
-    for line in lines {
-        if line.len() <= 75 {
-            out.push(line.clone());
-            continue;
+    let mut start = 0usize;
+    let mut first = true;
+    while start < line.len() {
+        let max_bytes = if first { 75 } else { 74 };
+        let mut end = (start + max_bytes).min(line.len());
+        while end > start && !line.is_char_boundary(end) {
+            end -= 1;
         }
-        let mut rest = line.as_str();
-        let mut first = true;
-        while !rest.is_empty() {
-            let max = if first { 75 } else { 74 };
-            let take = rest
+        if end == start {
+            end = line[start..]
                 .char_indices()
-                .map(|(i, _)| i)
-                .chain(std::iter::once(rest.len()))
-                .take_while(|i| *i <= max)
-                .last()
-                .unwrap_or(rest.len());
-            let (part, r) = rest.split_at(take);
-            out.push(if first {
-                part.to_string()
-            } else {
-                format!(" {part}")
-            });
-            rest = r;
-            first = false;
+                .nth(1)
+                .map_or(line.len(), |(idx, _)| start + idx);
         }
+        let part = &line[start..end];
+        out.push(if first {
+            part.to_string()
+        } else {
+            format!(" {part}")
+        });
+        start = end;
+        first = false;
     }
     out
 }
