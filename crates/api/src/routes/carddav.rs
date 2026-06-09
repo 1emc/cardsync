@@ -141,7 +141,7 @@ async fn propfind_collection(
             resources.push(resource_for(tenant_slug, addressbook_slug, &c, false));
         }
     }
-    xml_response(carddav::xml::multistatus(&resources))
+    xml_response(carddav::xml::multistatus(&resources).map_err(anyhow::Error::from)?)
 }
 async fn report_all(
     state: &AppState,
@@ -154,15 +154,13 @@ async fn report_all(
         .iter()
         .map(|c| resource_for(tenant_slug, addressbook_slug, c, true))
         .collect::<Vec<_>>();
-    xml_response(carddav::xml::multistatus(&resources))
+    xml_response(carddav::xml::multistatus(&resources).map_err(anyhow::Error::from)?)
 }
 fn report_one(tenant_slug: &str, addressbook_slug: &str, c: &Contact) -> ApiResult<Response> {
-    xml_response(carddav::xml::multistatus(&[resource_for(
-        tenant_slug,
-        addressbook_slug,
-        c,
-        true,
-    )]))
+    xml_response(
+        carddav::xml::multistatus(&[resource_for(tenant_slug, addressbook_slug, c, true)])
+            .map_err(anyhow::Error::from)?,
+    )
 }
 fn resource_for(
     tenant_slug: &str,

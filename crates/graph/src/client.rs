@@ -9,14 +9,16 @@ const SELECT: &str = "id,displayName,givenName,surname,mail,userPrincipalName,bu
 pub struct GraphClient {
     http: Client,
 }
-impl Default for GraphClient {
-    fn default() -> Self {
-        Self {
-            http: Client::new(),
-        }
-    }
-}
 impl GraphClient {
+    pub fn new() -> anyhow::Result<Self> {
+        let http = Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .build()
+            .context("failed to build graph HTTP client")?;
+        Ok(Self { http })
+    }
+
     pub fn http(&self) -> &Client {
         &self.http
     }

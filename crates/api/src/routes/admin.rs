@@ -259,11 +259,20 @@ pub async fn sync_tenant(
         tracing::warn!(tenant_id=%tenant_id, error_code="graph_sync_failed");
         e
     })?;
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+        .bind(tenant_id.to_string())
+        .bind(graph::sync::SOURCE_GRAPH_USERS)
+        .execute(&mut *tx)
+        .await?;
+    let sync_started_at: (DateTime<Utc>,) =
+        sqlx::query_as("SELECT now()").fetch_one(&mut *tx).await?;
+
     let mut synced = 0usize;
     let mut suppressed = 0usize;
     for u in users {
-        let email = u.mail.clone().or(u.user_principal_name.clone());
-        let is_sup = if let Some(e) = email.as_deref() {
+        let email = u.mail.as_deref().or(u.user_principal_name.as_deref());
+        let is_sup = if let Some(e) = email {
             is_suppressed(&state, tenant_id, e).await?
         } else {
             false
@@ -272,12 +281,20 @@ pub async fn sync_tenant(
             suppressed += 1;
         }
         let id = Uuid::new_v4();
-        sqlx::query("INSERT INTO contacts (id, tenant_id, source, source_object_id, display_name, given_name, surname, email, user_principal_name, business_phone, mobile_phone, job_title, department, company_name, office_location, is_suppressed, last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now()) ON CONFLICT (tenant_id, source, source_object_id) DO UPDATE SET display_name=EXCLUDED.display_name, given_name=EXCLUDED.given_name, surname=EXCLUDED.surname, email=EXCLUDED.email, user_principal_name=EXCLUDED.user_principal_name, business_phone=EXCLUDED.business_phone, mobile_phone=EXCLUDED.mobile_phone, job_title=EXCLUDED.job_title, department=EXCLUDED.department, company_name=EXCLUDED.company_name, office_location=EXCLUDED.office_location, is_suppressed=EXCLUDED.is_suppressed, updated_at=now(), last_seen_at=now()")
-            .bind(id).bind(tenant_id).bind(graph::sync::SOURCE_GRAPH_USERS).bind(u.id).bind(u.display_name).bind(u.given_name).bind(u.surname).bind(u.mail).bind(u.user_principal_name).bind(u.business_phones.first().cloned()).bind(u.mobile_phone).bind(u.job_title).bind(u.department).bind(u.company_name).bind(u.office_location).bind(is_sup).execute(&state.db).await?;
+        let business_phone = u.business_phones.first().cloned();
+        sqlx::query("INSERT INTO contacts (id, tenant_id, source, source_object_id, display_name, given_name, surname, email, user_principal_name, business_phone, mobile_phone, job_title, department, company_name, office_location, is_suppressed, is_deleted, last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,false,now()) ON CONFLICT (tenant_id, source, source_object_id) DO UPDATE SET display_name=EXCLUDED.display_name, given_name=EXCLUDED.given_name, surname=EXCLUDED.surname, email=EXCLUDED.email, user_principal_name=EXCLUDED.user_principal_name, business_phone=EXCLUDED.business_phone, mobile_phone=EXCLUDED.mobile_phone, job_title=EXCLUDED.job_title, department=EXCLUDED.department, company_name=EXCLUDED.company_name, office_location=EXCLUDED.office_location, is_suppressed=EXCLUDED.is_suppressed, is_deleted=false, updated_at=now(), last_seen_at=now()")
+            .bind(id).bind(tenant_id).bind(graph::sync::SOURCE_GRAPH_USERS).bind(u.id).bind(u.display_name).bind(u.given_name).bind(u.surname).bind(u.mail).bind(u.user_principal_name).bind(business_phone).bind(u.mobile_phone).bind(u.job_title).bind(u.department).bind(u.company_name).bind(u.office_location).bind(is_sup).execute(&mut *tx).await?;
         synced += 1;
     }
+    sqlx::query("UPDATE contacts SET is_deleted=true, updated_at=now() WHERE tenant_id=$1 AND source=$2 AND is_deleted=false AND (last_seen_at IS NULL OR last_seen_at < $3)")
+        .bind(tenant_id)
+        .bind(graph::sync::SOURCE_GRAPH_USERS)
+        .bind(sync_started_at.0)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("INSERT INTO sync_state (tenant_id, source, last_success_at) VALUES ($1,$2,now()) ON CONFLICT (tenant_id, source) DO UPDATE SET last_success_at=now(), last_error_at=NULL, last_error_message=NULL")
-        .bind(tenant_id).bind(graph::sync::SOURCE_GRAPH_USERS).execute(&state.db).await?;
+        .bind(tenant_id).bind(graph::sync::SOURCE_GRAPH_USERS).execute(&mut *tx).await?;
+    tx.commit().await?;
     tracing::info!(tenant_id=%tenant_id, count_contacts_synced=synced, count_contacts_suppressed=suppressed);
     Ok(Json(SyncResult {
         synced,
