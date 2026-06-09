@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: galcard
+      POSTGRES_PASSWORD: galcard
+      POSTGRES_DB: galcard
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U galcard -d galcard"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    profiles: ["api"]
+    environment:
+      DATABASE_URL: postgres://galcard:galcard@postgres:5432/galcard
+      ADMIN_API_TOKEN: dev-admin-token
+      SUPPRESSION_SECRET: dev-suppression-secret-change-me
+      TOKEN_ENCRYPTION_KEY: dev-token-encryption-key-change-me
+      BIND_ADDR: 0.0.0.0:3000
+      PUBLIC_BASE_URL: http://localhost:3000
+      RUST_LOG: info
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:

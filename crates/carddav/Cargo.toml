@@ -1,0 +1,16 @@
+[package]
+name = "carddav"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+argon2.workspace = true
+base64.workspace = true
+domain = { path = "../domain" }
+password-hash.workspace = true
+quick-xml.workspace = true
+rand.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
