@@ -10,7 +10,7 @@ pub struct BasicCredentials {
 }
 
 pub fn generate_app_password() -> String {
-    rand::thread_rng()
+    OsRng
         .sample_iter(&Alphanumeric)
         .take(32)
         .map(char::from)
@@ -34,10 +34,25 @@ pub fn verify_password(password: &str, encoded_hash: &str) -> bool {
 }
 
 pub fn parse_basic_auth(header: &str) -> Option<BasicCredentials> {
-    let value = header.strip_prefix("Basic ")?;
+    const MAX_BASIC_AUTH_VALUE_LEN: usize = 8 * 1024;
+
+    let (scheme, value) = header.trim().split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("Basic") {
+        return None;
+    }
+    let value = value.trim();
+    if value.is_empty() || value.len() > MAX_BASIC_AUTH_VALUE_LEN {
+        return None;
+    }
     let decoded = STANDARD.decode(value).ok()?;
+    if decoded.len() > MAX_BASIC_AUTH_VALUE_LEN {
+        return None;
+    }
     let text = String::from_utf8(decoded).ok()?;
     let (username, password) = text.split_once(':')?;
+    if username.is_empty() {
+        return None;
+    }
     Some(BasicCredentials {
         username: username.to_string(),
         password: password.to_string(),

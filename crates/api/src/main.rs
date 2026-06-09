@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         db,
         config: Arc::new(config),
-        graph: graph::client::GraphClient::default(),
+        graph: graph::client::GraphClient::new()?,
     };
     tracing::info!(%addr, "starting galcard api");
     let listener = tokio::net::TcpListener::bind(addr).await?;
