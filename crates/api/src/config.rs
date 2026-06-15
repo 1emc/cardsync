@@ -23,6 +23,9 @@ impl fmt::Debug for SecretString {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind_addr: SocketAddr,
+    // Read from PUBLIC_BASE_URL; reserved for absolute-URL generation (e.g. MDM
+    // profiles). Not consumed yet, so silence the dead-code lint for now.
+    #[allow(dead_code)]
     pub public_base_url: String,
     pub database_url: String,
     pub admin_api_token: SecretString,
