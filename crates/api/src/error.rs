@@ -1,5 +1,5 @@
 use axum::{
-    http::StatusCode,
+    http::{header::WWW_AUTHENTICATE, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -9,6 +9,8 @@ use serde_json::json;
 pub enum ApiError {
     #[error("unauthorized")]
     Unauthorized,
+    #[error("unauthorized")]
+    UnauthorizedBasic,
     #[error("forbidden")]
     Forbidden,
     #[error("not found")]
@@ -23,18 +25,35 @@ pub enum ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = match self {
-            Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Forbidden => StatusCode::FORBIDDEN,
-            Self::NotFound => StatusCode::NOT_FOUND,
-            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
-            Self::Sqlx(_) | Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        // The WWW-Authenticate challenge is required so that CardDAV clients
+        // (e.g. iOS Contacts) actually prompt for credentials on a 401.
+        let (status, message, challenge) = match self {
+            Self::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "unauthorized".to_string(),
+                Some(HeaderValue::from_static("Bearer")),
+            ),
+            Self::UnauthorizedBasic => (
+                StatusCode::UNAUTHORIZED,
+                "unauthorized".to_string(),
+                Some(HeaderValue::from_static("Basic realm=\"galcard CardDAV\"")),
+            ),
+            Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string(), None),
+            Self::NotFound => (StatusCode::NOT_FOUND, "not found".to_string(), None),
+            // Validation messages are safe to surface and help admins debug bad requests.
+            Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg, None),
+            // Internal errors stay generic so we never leak SQL or upstream details.
+            Self::Sqlx(_) | Self::Anyhow(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal server error".to_string(),
+                None,
+            ),
         };
-        (
-            status,
-            Json(json!({"error": status.canonical_reason().unwrap_or("error")})),
-        )
-            .into_response()
+        let mut response = (status, Json(json!({ "error": message }))).into_response();
+        if let Some(challenge) = challenge {
+            response.headers_mut().insert(WWW_AUTHENTICATE, challenge);
+        }
+        response
     }
 }
 

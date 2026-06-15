@@ -107,21 +107,21 @@ async fn authenticate(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
     else {
-        return Err(ApiError::Unauthorized);
+        return Err(ApiError::UnauthorizedBasic);
     };
     let Some(creds) = carddav::auth::parse_basic_auth(h) else {
-        return Err(ApiError::Unauthorized);
+        return Err(ApiError::UnauthorizedBasic);
     };
     let row: Option<(Uuid, String, bool)> = sqlx::query_as("SELECT c.tenant_id, c.password_hash, c.is_active FROM carddav_users c JOIN tenants t ON t.id=c.tenant_id WHERE t.slug=$1 AND c.addressbook_slug=$2 AND c.username=$3")
         .bind(tenant_slug).bind(addressbook_slug).bind(&creds.username).fetch_optional(&state.db).await?;
     let Some((tenant_id, password_hash, is_active)) = row else {
-        return Err(ApiError::Unauthorized);
+        return Err(ApiError::UnauthorizedBasic);
     };
     if !is_active {
-        return Err(ApiError::Unauthorized);
+        return Err(ApiError::UnauthorizedBasic);
     }
     if !carddav::auth::verify_password(&creds.password, &password_hash) {
-        return Err(ApiError::Unauthorized);
+        return Err(ApiError::UnauthorizedBasic);
     }
     Ok(AuthContext { tenant_id })
 }
