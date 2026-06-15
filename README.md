@@ -145,27 +145,94 @@ Password: generated-app-password
 UseSSL: true
 ```
 
-## Lokale Entwicklung
+## Schnellstart (lokal)
 
-Voraussetzungen:
+In wenigen Minuten von Null zu einem abfragbaren CardDAV-Adressbuch – ganz ohne
+Microsoft 365. Für die ersten Schritte genügen Testkontakte; der Microsoft Graph
+Sync ist optional und in [Microsoft App Registration](#microsoft-app-registration-und-externe-anforderungen)
+beschrieben.
 
-```text
-Linux Server oder Development Machine
-Docker oder native Rust Runtime
-PostgreSQL
-Microsoft 365 Tenant mit Admin Consent für Graph Tests
-öffentliche HTTPS URL für echte iOS Tests
-```
+### Voraussetzungen
 
-Start:
+- Rust Toolchain (`cargo`, Edition 2021) – siehe <https://rustup.rs>
+- Docker und Docker Compose (für PostgreSQL)
+- `curl` und optional `openssl` (zum Erzeugen der Secrets)
+
+### Schritt 1: PostgreSQL starten
 
 ```bash
 docker compose up -d postgres
+```
+
+### Schritt 2: Konfiguration anlegen
+
+```bash
 cp .env.example .env
+```
+
+Wichtig: `ADMIN_API_TOKEN` und `SUPPRESSION_SECRET` müssen jeweils mindestens
+**32 Zeichen** lang sein, sonst startet der Dienst nicht. Die Platzhalter in
+`.env.example` erfüllen diese Länge für lokale Tests. Für alles andere starke
+Werte erzeugen:
+
+```bash
+echo "ADMIN_API_TOKEN=$(openssl rand -hex 32)" >> .env
+echo "SUPPRESSION_SECRET=$(openssl rand -hex 32)" >> .env
+```
+
+> Hinweis: `SUPPRESSION_SECRET` muss stabil bleiben. Ein nachträglicher Wechsel
+> erzeugt andere HMAC-Werte und entwertet bestehende Suppression-Einträge.
+
+### Schritt 3: API starten
+
+```bash
 cargo run -p api
 ```
 
-Optional mit API-Container:
+Die Datenbank-Migrationen werden beim Start automatisch ausgeführt. Sobald
+`starting galcard api` im Log erscheint, läuft der Dienst auf der in `BIND_ADDR`
+konfigurierten Adresse (Standard `127.0.0.1:3000`).
+
+### Schritt 4: Health-Check
+
+```bash
+curl http://localhost:3000/health
+```
+
+### Schritt 5: Komplettbeispiel ohne Microsoft 365
+
+Das folgende Skript legt einen Tenant, einen Testkontakt und einen CardDAV-User
+an und ruft das Adressbuch anschließend per CardDAV ab. Es nutzt das Admin-Token
+aus `.env.example`; bei eigenen Secrets entsprechend anpassen.
+
+```bash
+ADMIN_TOKEN="dev-admin-token-change-me-to-32plus-chars"
+BASE="http://localhost:3000"
+
+# 1) Tenant anlegen und dessen ID merken
+TENANT_ID=$(curl -s -X POST "$BASE/admin/tenants" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"slug":"demo","display_name":"Demo Tenant"}' | jq -r .id)
+
+# 2) Testkontakt anlegen
+curl -s -X POST "$BASE/admin/tenants/$TENANT_ID/test-contacts" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"display_name":"Max Mustermann","given_name":"Max","surname":"Mustermann","email":"max.mustermann@example.com","company_name":"Example GmbH","job_title":"IT Administrator"}'
+
+# 3) CardDAV-User anlegen – das Passwort wird nur EINMAL zurückgegeben
+curl -s -X POST "$BASE/admin/tenants/$TENANT_ID/carddav-users" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"ios-demo","addressbook_slug":"default"}'
+
+# 4) Adressbuch per CardDAV abfragen (Passwort aus Schritt 3 einsetzen)
+curl -s -X REPORT -u ios-demo:DAS_PASSWORT_AUS_SCHRITT_3 \
+  "$BASE/carddav/demo/default/"
+```
+
+### Optional: kompletter Stack im Container
 
 ```bash
 docker compose --profile api up --build
@@ -205,7 +272,7 @@ Die API führt Migrationen beim Start per `sqlx::migrate!` aus. Alternativ könn
 
 ```bash
 curl -X POST http://localhost:3000/admin/tenants \
-  -H "Authorization: Bearer dev-admin-token" \
+  -H "Authorization: Bearer dev-admin-token-change-me-to-32plus-chars" \
   -H "Content-Type: application/json" \
   -d '{
     "slug": "demo",
@@ -218,14 +285,14 @@ curl -X POST http://localhost:3000/admin/tenants \
 
 ```bash
 curl -X POST http://localhost:3000/admin/tenants/{tenant_id}/sync \
-  -H "Authorization: Bearer dev-admin-token"
+  -H "Authorization: Bearer dev-admin-token-change-me-to-32plus-chars"
 ```
 
 ### Testkontakt anlegen
 
 ```bash
 curl -X POST http://localhost:3000/admin/tenants/{tenant_id}/test-contacts \
-  -H "Authorization: Bearer dev-admin-token" \
+  -H "Authorization: Bearer dev-admin-token-change-me-to-32plus-chars" \
   -H "Content-Type: application/json" \
   -d '{
     "display_name": "Max Mustermann",
@@ -242,7 +309,7 @@ curl -X POST http://localhost:3000/admin/tenants/{tenant_id}/test-contacts \
 
 ```bash
 curl -X POST http://localhost:3000/admin/tenants/{tenant_id}/carddav-users \
-  -H "Authorization: Bearer dev-admin-token" \
+  -H "Authorization: Bearer dev-admin-token-change-me-to-32plus-chars" \
   -H "Content-Type: application/json" \
   -d '{
     "username": "ios-demo",
@@ -264,7 +331,7 @@ Antwort enthält das Passwort nur einmal:
 
 ```bash
 curl -X POST http://localhost:3000/admin/privacy/suppressions \
-  -H "Authorization: Bearer dev-admin-token" \
+  -H "Authorization: Bearer dev-admin-token-change-me-to-32plus-chars" \
   -H "Content-Type: application/json" \
   -d '{
     "email": "max.mustermann@example.com",
@@ -274,6 +341,13 @@ curl -X POST http://localhost:3000/admin/privacy/suppressions \
 ```
 
 Die Klartext-E-Mail wird nicht gespeichert und nicht zurückgegeben.
+
+Optionale Felder:
+
+- `scope_type`: `global` (alle Tenants) oder `tenant`.
+- `scope_value`: bei `scope_type=tenant` die betroffene Tenant-ID.
+- `expires_at`: RFC-3339-Zeitstempel (z. B. `2026-12-31T23:59:59Z`); nach Ablauf
+  greift die Suppression nicht mehr. Ohne Angabe gilt sie unbefristet.
 
 ## CardDAV Beispiele
 
@@ -320,6 +394,10 @@ Empfohlen sind Caddy, nginx oder Traefik für:
 - Forwarded Headers.
 - kleine Request Body Limits.
 - nur notwendige Ports öffnen.
+- Rate Limiting pro Client-IP. Der eingebaute Limiter ist ein einfaches globales
+  Sicherheitsnetz (Requests pro Sekunde über alle Clients) und schützt nicht
+  gezielt vor Brute-Force auf einzelne CardDAV-Konten. Ein Per-IP-Limit am
+  Reverse Proxy ergänzt dies.
 
 ## Datenschutzgrenzen
 
@@ -335,6 +413,8 @@ Empfohlen sind Caddy, nginx oder Traefik für:
 ## Security Hinweise
 
 - Admin API nutzt im MVP ein statisches Bearer Token aus `ADMIN_API_TOKEN`.
+- `ADMIN_API_TOKEN` und `SUPPRESSION_SECRET` müssen jeweils mindestens 32 Zeichen lang sein.
+- Token- und Passwortvergleiche erfolgen in konstanter Zeit (kein Timing-Leak).
 - CardDAV nutzt Basic Auth mit lokalen App-Passwörtern.
 - Passwörter werden nur als Argon2id Hash gespeichert.
 - App-Passwörter werden nur bei Erstellung oder Rotation im Klartext angezeigt.

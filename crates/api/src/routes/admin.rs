@@ -58,6 +58,22 @@ fn validate_slug(slug: &str, field: &str) -> ApiResult<()> {
     Ok(())
 }
 
+fn validate_username(username: &str) -> ApiResult<()> {
+    if username.is_empty() || username.len() > 128 {
+        return Err(ApiError::BadRequest(
+            "username must be 1-128 characters".into(),
+        ));
+    }
+    // A ':' would break HTTP Basic auth parsing (user:password); whitespace and
+    // control characters would make the username impossible to type into a client.
+    if !username.chars().all(|c| c.is_ascii_graphic() && c != ':') {
+        return Err(ApiError::BadRequest(
+            "username may only contain printable ASCII characters without spaces or ':'".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 pub struct CreateTenant {
     slug: String,
@@ -81,6 +97,7 @@ pub struct CreateSuppression {
     scope_type: String,
     scope_value: Option<String>,
     reason: Option<String>,
+    expires_at: Option<DateTime<Utc>>,
 }
 #[derive(Deserialize)]
 pub struct CreateTestContact {
@@ -139,6 +156,7 @@ pub async fn create_carddav_user(
     Json(req): Json<CreateCarddavUser>,
 ) -> ApiResult<Json<PasswordResponse>> {
     require_admin(&headers, &state)?;
+    validate_username(&req.username)?;
     let password = carddav::auth::generate_app_password();
     let hash =
         carddav::auth::hash_password(&password).map_err(|e| ApiError::BadRequest(e.to_string()))?;
@@ -228,8 +246,8 @@ pub async fn create_suppression(
     .map_err(anyhow::Error::from)?
     .suppression_hash;
     let id = Uuid::new_v4();
-    let row = sqlx::query_as::<_, SuppressionRow>("INSERT INTO privacy_suppressions (id, scope_type, scope_value, suppression_hash, reason) VALUES ($1,$2,$3,$4,$5) RETURNING *")
-        .bind(id).bind(req.scope_type).bind(req.scope_value).bind(hash).bind(req.reason).fetch_one(&state.db).await?;
+    let row = sqlx::query_as::<_, SuppressionRow>("INSERT INTO privacy_suppressions (id, scope_type, scope_value, suppression_hash, reason, expires_at) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *")
+        .bind(id).bind(req.scope_type).bind(req.scope_value).bind(hash).bind(req.reason).bind(req.expires_at).fetch_one(&state.db).await?;
     Ok(Json(row.into()))
 }
 
