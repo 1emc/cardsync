@@ -154,14 +154,43 @@ beschrieben.
 
 ### Voraussetzungen
 
-- Rust Toolchain (`cargo`, Edition 2021) – siehe <https://rustup.rs>
+- Rust Toolchain (`cargo`, Edition 2021)
 - Docker und Docker Compose (für PostgreSQL)
 - `curl` und optional `openssl` (zum Erzeugen der Secrets)
+
+#### Rust installieren (rustup, empfohlen)
+
+Rust am besten über `rustup` installieren, **nicht** über die Distro-Pakete:
+`apt install cargo` liefert je nach Distribution ein zu altes `rustc`
+(z. B. 1.85), das die Abhängigkeiten nicht baut.
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+rustc --version   # sollte aktuelles stable anzeigen
+```
+
+> Die mitgelieferte `Cargo.lock` ist zusätzlich auf rustc-1.85-kompatible
+> Versionen gepinnt. Mit einem aktuellen `rustup`-stable funktioniert der Build
+> aber ohne Sonderbehandlung.
+
+#### Docker installieren
+
+Installationsanleitung für die jeweilige Distribution:
+<https://docs.docker.com/engine/install/>. Auf Debian/Ubuntu nutzt du das
+`docker-compose-plugin` (Befehl `docker compose`, nicht `docker-compose`).
+
+Wenn dein Benutzer nicht in der `docker`-Gruppe ist, brauchen die folgenden
+`docker`-Befehle ein vorangestelltes `sudo`. Dauerhaft ohne `sudo`:
+
+```bash
+sudo usermod -aG docker "$USER"   # danach neu anmelden
+```
 
 ### Schritt 1: PostgreSQL starten
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres   # ggf. mit sudo
 ```
 
 ### Schritt 2: Konfiguration anlegen
@@ -192,6 +221,10 @@ cargo run -p api
 Die Datenbank-Migrationen werden beim Start automatisch ausgeführt. Sobald
 `starting galcard api` im Log erscheint, läuft der Dienst auf der in `BIND_ADDR`
 konfigurierten Adresse (Standard `127.0.0.1:3000`).
+
+Der Prozess läuft im Vordergrund. Für die folgenden `curl`-Beispiele ein
+zweites Terminal öffnen – oder den Dienst mit `cargo run -p api &` im
+Hintergrund starten.
 
 ### Schritt 4: Health-Check
 

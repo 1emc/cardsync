@@ -11,8 +11,6 @@ pub enum ApiError {
     Unauthorized,
     #[error("unauthorized")]
     UnauthorizedBasic,
-    #[error("forbidden")]
-    Forbidden,
     #[error("not found")]
     NotFound,
     #[error("bad request: {0}")]
@@ -38,7 +36,6 @@ impl IntoResponse for ApiError {
                 "unauthorized".to_string(),
                 Some(HeaderValue::from_static("Basic realm=\"galcard CardDAV\"")),
             ),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string(), None),
             Self::NotFound => (StatusCode::NOT_FOUND, "not found".to_string(), None),
             // Validation messages are safe to surface and help admins debug bad requests.
             Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg, None),
